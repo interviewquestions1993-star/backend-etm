@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: backend-etm
+    runtime: python
+    plan: free
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    autoDeployTrigger: commit
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.11
+      - key: FIREBASE_ENABLED
+        value: "false"
+      - key: QA_GRADING_MODE
+        value: rule
+      - key: GOOGLE_OAUTH_CLIENT_ID
+        value: 1035880980503-fu8309tnjuv189e50dksldlosr676q0v.apps.googleusercontent.com
