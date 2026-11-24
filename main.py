@@ -1,4 +1,5 @@
 import json
+import base64
 import random
 import os
 import logging
@@ -198,12 +199,12 @@ class QAHistoryRecord(BaseModel):
     user_name: Optional[str] = None
 
 
-RAW_CBSE_MCQS_BASE = "https://raw.githubusercontent.com/tensecondsfacts93-cpu/cbse-content/refs/heads/main/"
+GITHUB_CONTENTS_BASE = "https://api.github.com/repos/tensecondsfacts93-cpu/cbse-content/contents/"
 _CBSE_MCQS_CACHE = {}
 
 
 def fetch_cbse_mcqs(chapter_name: Optional[str] = None, version: str = "V1", quiz_type: str = "MCQ"):
-    """Fetch CBSE MCQs or QA from GitHub raw. If chapter_name is provided, construct
+    """Fetch CBSE MCQs or QA through GitHub's authenticated Contents API. If chapter_name is provided, construct
     the raw URL for that chapter file and fetch it. Caches per-URL results.
     Raises ChapterNotFound if chapter-specific URL returns 404.
     """
@@ -213,13 +214,13 @@ def fetch_cbse_mcqs(chapter_name: Optional[str] = None, version: str = "V1", qui
         name = chapter_name.strip()
         filename = f"{name}-{quiz_type.upper()}-{version.lower()}"
         encoded = urllib.parse.quote(filename, safe='')
-        url = RAW_CBSE_MCQS_BASE + encoded
+        url = GITHUB_CONTENTS_BASE + encoded + "?ref=main"
         logging.info("Fetching chapter-specific CBSE content file: %s", filename)
         is_chapter_specific = True
     else:
         # Fallback to a default filename previously used
         fallback_name = "The Invisible Living World: Beyond Our Naked Eye"
-        url = RAW_CBSE_MCQS_BASE + urllib.parse.quote(fallback_name, safe="")
+        url = GITHUB_CONTENTS_BASE + urllib.parse.quote(fallback_name, safe="") + "?ref=main"
         logging.info("Using default fallback CBSE content file")
         is_chapter_specific = False
 
@@ -229,20 +230,21 @@ def fetch_cbse_mcqs(chapter_name: Optional[str] = None, version: str = "V1", qui
     try:
         # Private GitHub repositories require a fine-grained token with Contents: read.
         # Keep the token in the hosting environment, never in the source or request URL.
-        headers = {"User-Agent": "backend-etm"}
+        headers = {
+            "User-Agent": "backend-etm",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
         github_token = os.getenv("GITHUB_TOKEN", "").strip()
         if github_token:
-            if github_token.startswith("GHSAT"):
-                # GitHub raw-download tokens are supplied as a query parameter.
-                # This credential is never written to logs or error messages.
-                separator = "&" if "?" in url else "?"
-                url = f"{url}{separator}{urllib.parse.urlencode({'token': github_token})}"
-            else:
-                # Fine-grained PATs use the Authorization header.
-                headers["Authorization"] = f"Bearer {github_token}"
+            headers["Authorization"] = f"Bearer {github_token}"
         request = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(request, timeout=15) as response:
-            content = response.read().decode("utf-8")
+            github_file = json.loads(response.read().decode("utf-8"))
+            encoded_content = github_file.get("content", "")
+            if github_file.get("encoding") != "base64" or not encoded_content:
+                raise ValueError("GitHub returned no file content")
+            content = base64.b64decode(encoded_content).decode("utf-8")
             
             # Extract only the valid JSON array (from first [ to last ])
             # This handles files with extra text before or after the JSON
@@ -297,6 +299,8 @@ def fetch_cbse_mcqs(chapter_name: Optional[str] = None, version: str = "V1", qui
         # If chapter-specific URL returns 404, raise ChapterNotFound
         if is_chapter_specific and exc.code == 404:
             raise ChapterNotFound(f"Chapter data not yet available: {chapter_name}") from exc
+        if exc.code == 403:
+            raise RuntimeError("GitHub denied access; check that GITHUB_TOKEN is a fine-grained token with Contents read access to cbse-content") from exc
         raise RuntimeError(f"Failed to load CBSE MCQ content (GitHub HTTP {exc.code})") from exc
     except Exception as exc:
         raise RuntimeError(f"Failed to load CBSE MCQ content: {type(exc).__name__}") from exc
@@ -720,6 +724,7 @@ def get_cbse_mcqs(request: CBSEMCQRequest, current_user: dict | None = Depends(v
             chapter_not_found = True
         except Exception as exc:
             logging.warning("Failed to fetch CBSE MCQs for chapter '%s': %s", chapter_name, exc)
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     # If chapter was not found, return a message to the user
     if chapter_not_found:
