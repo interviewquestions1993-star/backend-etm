@@ -198,7 +198,7 @@ class QAHistoryRecord(BaseModel):
     user_name: Optional[str] = None
 
 
-RAW_CBSE_MCQS_BASE = "https://raw.githubusercontent.com/learnenglishandgrow93-web/cbse-mcq-bank/refs/heads/main/"
+RAW_CBSE_MCQS_BASE = "https://raw.githubusercontent.com/tensecondsfacts93-cpu/cbse-content/refs/heads/main/"
 _CBSE_MCQS_CACHE = {}
 
 
@@ -226,7 +226,14 @@ def fetch_cbse_mcqs(chapter_name: Optional[str] = None, version: str = "V1", qui
         return _CBSE_MCQS_CACHE[url]
 
     try:
-        with urllib.request.urlopen(url, timeout=15) as response:
+        # Private GitHub repositories require a fine-grained token with Contents: read.
+        # Keep the token in the hosting environment, never in the source or request URL.
+        headers = {"User-Agent": "backend-etm"}
+        github_token = os.getenv("GITHUB_TOKEN", "").strip()
+        if github_token:
+            headers["Authorization"] = f"Bearer {github_token}"
+        request = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(request, timeout=15) as response:
             content = response.read().decode("utf-8")
             
             # Extract only the valid JSON array (from first [ to last ])
