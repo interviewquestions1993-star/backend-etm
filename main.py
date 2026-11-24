@@ -1,4 +1,5 @@
 import json
+import base64
 import random
 import os
 import logging
@@ -198,7 +199,7 @@ class QAHistoryRecord(BaseModel):
     user_name: Optional[str] = None
 
 
-RAW_CBSE_MCQS_BASE = "https://raw.githubusercontent.com/tensecondsfacts93-cpu/cbse-content/refs/heads/main/"
+GITHUB_CONTENTS_BASE = "https://api.github.com/repos/tensecondsfacts93-cpu/cbse-content/contents/"
 _CBSE_MCQS_CACHE = {}
 
 
@@ -213,12 +214,13 @@ def fetch_cbse_mcqs(chapter_name: Optional[str] = None, version: str = "V1", qui
         name = chapter_name.strip()
         filename = f"{name}-{quiz_type.upper()}-{version.lower()}"
         encoded = urllib.parse.quote(filename, safe='')
-        url = RAW_CBSE_MCQS_BASE + encoded
+        url = GITHUB_CONTENTS_BASE + encoded + "?ref=main"
         logging.info(f"Constructed chapter-specific URL: {url}")
         is_chapter_specific = True
     else:
         # Fallback to a default filename previously used
-        url = RAW_CBSE_MCQS_BASE + "The%20Invisible%20Living%20World%3A%20Beyond%20Our%20Naked%20Eye"
+        fallback_name = "The Invisible Living World: Beyond Our Naked Eye"
+        url = GITHUB_CONTENTS_BASE + urllib.parse.quote(fallback_name, safe="") + "?ref=main"
         logging.info(f"Using default fallback URL: {url}")
         is_chapter_specific = False
 
@@ -228,13 +230,21 @@ def fetch_cbse_mcqs(chapter_name: Optional[str] = None, version: str = "V1", qui
     try:
         # Private GitHub repositories require a fine-grained token with Contents: read.
         # Keep the token in the hosting environment, never in the source or request URL.
-        headers = {"User-Agent": "backend-etm"}
+        headers = {
+            "User-Agent": "backend-etm",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+        }
         github_token = os.getenv("GITHUB_TOKEN", "").strip()
         if github_token:
             headers["Authorization"] = f"Bearer {github_token}"
         request = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(request, timeout=15) as response:
-            content = response.read().decode("utf-8")
+            response_data = json.loads(response.read().decode("utf-8"))
+            encoded_content = response_data.get("content", "")
+            if response_data.get("encoding") != "base64" or not encoded_content:
+                raise ValueError("GitHub Contents API returned no base64 file content")
+            content = base64.b64decode(encoded_content).decode("utf-8")
             
             # Extract only the valid JSON array (from first [ to last ])
             # This handles files with extra text before or after the JSON
